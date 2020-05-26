@@ -24,6 +24,8 @@ const ACTIVATION_THRESHOLD: f64 = 0.01;
 const TRANSCRIPT_COUNT: u16 = 10;
 /// The amount of time you must be loud or quiet for for Mega to start speech processing
 const THRESHOLD_TIME_SECONDS: f64 = 1.0;
+/// The `lambda` parameter in `tvid::condat`
+const DENOISE_RADIUS: f32 = 0.05;
 
 /// The amount of time it buffers while listening for "Mega"
 const ACTIVATION_BUFFER_SIZE_SECONDS: f64 = 2.0;
@@ -133,55 +135,77 @@ impl<'a> MegaState<'a> {
                         *crossed_loudness = true;
                     } else if *crossed_loudness && avg_loudness < ACTIVATION_THRESHOLD {
                         // We're done speaking; let's-a go!
-                        use std::io::Write;
                         *crossed_loudness = false;
                         print!("Processing... ");
-                        std::io::stdout().flush().map_err(|err| err.to_string())?;
+                        flush();
+
+                        let (speech, dur) = MegaState::text_to_speech(
+                            &mut self.speech_model,
+                            audio_buffer.iter().cloned(),
+                            self.mic_sample_rate,
+                        )?;
+                        print!(
+                            "in {:4} seconds ({}% of RT): ",
+                            dur.as_secs_f64(),
+                            100.0 * dur.as_secs_f64() / ACTIVATION_BUFFER_SIZE_SECONDS
+                        );
+                        let found_mega = speech.transcripts().iter().any(|tc| {
+                            // Confusingly, tc.tokens() yields the separate letters.
+                            // Perhaps in other natlangs they mean something different?
+                            print!("{}, ", tc);
+                            tc.to_string() == "mega"
+                        });
+                        if found_mega {
+                            print!("Found \"mega\"!");
+                            self.speak("ready".into())?;
+                            self.state = State::new_heard_trigger(
+                                self.mic_sample_rate as f64,
+                                &mut self.speech_model,
+                            )?;
+                        }
+                        println!("");
                     }
                 }
                 State::HeardTrigger {
-                    ref mut audio_buffer,
-                    buf_size,
+                    ref mut deep_stream,
+                    ref mut tail_buffer,
                     ref mut crossed_loudness,
                     loudness_check_size,
                 } => {
                     // Get the next audio bits from the microphone
-                    let new_audio = self.mic_receiver.try_iter();
+                    // Collect it now so there's no borrow problems
+                    let new_audio = self.mic_receiver.try_iter().collect::<Vec<_>>();
+                    // Flatten it
+                    let flattened = new_audio.clone().into_iter().flatten().collect::<Vec<_>>();
 
-                    // Buffer in the new audio
-                    buffer_audio(audio_buffer, new_audio, buf_size);
+                    // Convert the new audio for deepspeech
+                    let audio_wip = tv1d::tautstring(&flattened, DENOISE_RADIUS);
+                    // Convert audio to a Signal
+                    let sig = signal::from_iter(audio_wip.iter().map(|&s| [s.to_sample()]));
+                    // convert to i16, 16000hz audio.
+                    let interpolator = Linear::new([0i16], [0]);
+                    let converter = Converter::from_hz_to_hz(
+                        sig,
+                        interpolator,
+                        self.mic_sample_rate as f64,
+                        DEEPSPEECH_SAMPLE_RATE as f64,
+                    );
+                    let converted = converter
+                        .until_exhausted()
+                        .map(|s| s[0])
+                        .collect::<Vec<_>>();
+                    // pipe it in
+                    deep_stream.feed_audio(&converted);
 
                     // See if it's LOUD ENOUGH to warrant trying to scan for words
-                    let loudness: f64 = audio_buffer
+                    // Buffer it in for averages
+                    buffer_audio(tail_buffer, new_audio.into_iter(), loudness_check_size);
+                    let loudness: f64 = tail_buffer
                         .iter()
                         .rev()
                         .take(loudness_check_size)
                         .fold(0.0, |acc, &sample| acc + sample.abs() as f64);
                     let avg_loudness = loudness / loudness_check_size as f64;
-                    // println!("Loudness: {}", avg_loudness);
-
-                    let (speech, dur) = MegaState::text_to_speech(
-                        &mut self.speech_model,
-                        audio_buffer.iter().cloned(),
-                        self.mic_sample_rate,
-                    )?;
-                    print!(
-                        "in {:4} seconds ({}% of RT): ",
-                        dur.as_secs_f64(),
-                        100.0 * dur.as_secs_f64() / ACTIVATION_BUFFER_SIZE_SECONDS
-                    );
-                    let found_mega = speech.transcripts().iter().any(|tc| {
-                        // Confusingly, tc.tokens() yields the separate letters.
-                        // Perhaps in other natlangs they mean something different?
-                        print!("{}, ", tc);
-                        tc.to_string() == "mega"
-                    });
-                    if found_mega {
-                        print!("Found \"mega\"!");
-                        self.speak("ready".into())?;
-                        self.state = State::new_heard_trigger(self.mic_sample_rate as f64);
-                    }
-                    println!("");
 
                     // Possibly calculate this dynamically later?
                     if !*crossed_loudness && avg_loudness >= ACTIVATION_THRESHOLD {
@@ -190,7 +214,20 @@ impl<'a> MegaState<'a> {
                     } else if *crossed_loudness && avg_loudness < ACTIVATION_THRESHOLD {
                         // We're done speaking; let's-a go!
                         *crossed_loudness = false;
-                        print!("Processing command... ");
+                        println!("Processing command... ");
+
+                        // The stream finish_with_metadata takes a u32, while the normal one takes a u16
+                        // literally unplayable
+                        let speech = deep_stream
+                            .finish_with_metadata(TRANSCRIPT_COUNT as u32)
+                            .map_err(|_| "DeepSpeech could not finish processing streamed audio")?;
+
+                        // Marshall the heard audio.
+                        for trans /*rights*/ in speech.transcripts() {
+                            let trans_str = trans.to_string(); // curse you dropped values
+                            let split = trans_str.split_whitespace().collect::<Vec<_>>();
+                            println!("* {:?}", split);
+                        }
                     }
                 }
             };
@@ -206,7 +243,6 @@ impl<'a> MegaState<'a> {
     where
         I: IntoIterator<Item = f32>,
     {
-        const DENOISE_RADIUS: f32 = 0.05;
         let audio_wip =
             tv1d::tautstring(&audio_data.into_iter().collect::<Vec<_>>(), DENOISE_RADIUS);
 
@@ -242,7 +278,6 @@ impl<'a> MegaState<'a> {
 }
 
 /// Used for MegaState's state machine
-#[derive(Debug)]
 enum State {
     /// Waiting for "Mega"
     Idle {
@@ -258,10 +293,10 @@ enum State {
     },
     /// Heard "Mega", now waiting for commands
     HeardTrigger {
-        /// Buffers the audio heard
-        audio_buffer: VecDeque<f32>,
-        /// How long (in samples) the buffered audio should be
-        buf_size: usize,
+        /// The Stream for DeepSpeech
+        deep_stream: deepspeech::Stream,
+        /// The tail end of the stream sent for averaging
+        tail_buffer: VecDeque<f32>,
         /// How much of the newest of the audio we should check for loudness
         loudness_check_size: usize,
         /// Whether we crossed the loudness threshold
@@ -281,16 +316,18 @@ impl State {
             crossed_loudness: false,
         }
     }
-    fn new_heard_trigger(sample_rate: f64) -> Self {
-        let buf_size = (sample_rate * COMMAND_BUFFER_SIZE_SECONDS) as usize;
+    fn new_heard_trigger(sample_rate: f64, speech_model: &mut Model) -> Result<Self, String> {
         let loudness_check_size = (sample_rate * THRESHOLD_TIME_SECONDS) as usize;
-        let audio_buffer = (0..buf_size).map(|_| 0.0).collect();
-        State::HeardTrigger {
-            buf_size,
+        let tail_buffer = (0..loudness_check_size).map(|_| 0.0).collect();
+        let stream = speech_model
+            .create_stream()
+            .map_err(|_| "could not start DeepSpeech streaming")?;
+        Ok(State::HeardTrigger {
+            tail_buffer,
+            deep_stream: stream,
             loudness_check_size,
-            audio_buffer,
             crossed_loudness: false,
-        }
+        })
     }
 }
 
@@ -309,4 +346,9 @@ where
     while buffer.len() > buf_size {
         buffer.pop_front();
     }
+}
+
+fn flush() {
+    use std::io::Write;
+    std::io::stdout().flush().unwrap();
 }

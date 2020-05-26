@@ -10,12 +10,12 @@ mod windows_version {
     use winapi::um::{
         combaseapi::{self, CLSIDFromProgID, CoCreateInstance, CoInitializeEx},
         objbase::COINIT_MULTITHREADED,
-        sapi::{IEnumSpObjectTokens, ISpObjectTokenCategory, ISpVoice},
+        sapi::ISpVoice,
         winnt::HRESULT,
     };
-    use winapi::{Class, Interface};
+    use winapi::Interface;
 
-    use std::{mem, ptr::null_mut, thread};
+    use std::{mem, ptr::null_mut};
 
     pub struct SpeechSynthesizer<'a> {
         synther: &'a mut ISpVoice,
