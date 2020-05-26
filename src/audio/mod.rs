@@ -1,5 +1,8 @@
 //! Handles the audio
 
+mod speech_synthesis;
+pub use speech_synthesis::SpeechSynthesizer;
+
 use cpal::{
     self,
     traits::{DeviceTrait, EventLoopTrait, HostTrait},
@@ -93,6 +96,8 @@ pub fn get_audio_channels() -> (
         .next()
         .expect("microphone supports no inputs?")
         .with_max_sample_rate();
+    let mic_sample_rate = mic_format.sample_rate.0; // pull it out here to avoid moved value errors
+
     // Start the input stream
     let mic_event_loop = audio_host.event_loop();
     let mic_stream_id = mic_event_loop
@@ -125,10 +130,15 @@ pub fn get_audio_channels() -> (
                 _ => panic!("Unknown mic stream data type ;("),
             };
 
+            // The microphone might have many channels! But we need it to only have one channel
+            let mono_buffer = raw_buffer
+                // Turn [L R L R L R...] into [[L R] [L R] [L R] ... ]
+                .chunks(mic_format.channels as usize)
+                // Average the value of each chunk of audio data
+                .map(|chunk| chunk.iter().fold(0.0, |acc, &s| acc + s) / chunk.len() as f32);
+
             // Send off the converted audio
-            mic_sender
-                .send(raw_buffer.iter().map(|sample| *sample).collect())
-                .unwrap();
+            mic_sender.send(mono_buffer.collect()).unwrap();
         });
     });
 
@@ -136,6 +146,6 @@ pub fn get_audio_channels() -> (
 
     (
         (speaker_sender, speaker_handle, speaker_format.sample_rate.0),
-        (mic_reciever, mic_handle, mic_format.sample_rate.0),
+        (mic_reciever, mic_handle, mic_sample_rate),
     )
 }

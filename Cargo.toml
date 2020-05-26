@@ -15,3 +15,10 @@ audrey = "0.2.0" # Convert audio from microphone into the kind that DeepSpeech l
 deepspeech = {path = "deepspeech-rs-master"} # Speech recognition. Locally cloned to fix an irritating bug for Windows...
 # deepspeech = "0.7.0"
 tv1d = "0.1.0" # noise reduction
+winapi = {version = "0.3.8", features = [
+    "sapi", "sapi51", "sapi53", # Speech synthesis
+    "winnt", # Wide strings
+    "combaseapi", # CoCreateInstance
+    "objbase", # i don't even know
+    "winerror"
+]}
