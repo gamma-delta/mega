@@ -15,6 +15,10 @@ audrey = "0.2.0" # Convert audio from microphone into the kind that DeepSpeech l
 deepspeech = {path = "deepspeech-rs-master"} # Speech recognition. Locally cloned to fix an irritating bug for Windows...
 # deepspeech = "0.7.0"
 tv1d = "0.1.0" # noise reduction
+rlua = "0.17.0" # lua for the commands
+crossbeam = "0.7.3" # Sendable senders, what a time to be alive
+
+[target.'cfg(windows)'.dependencies]
 winapi = {version = "0.3.8", features = [
     "sapi", "sapi51", "sapi53", # Speech synthesis
     "winnt", # Wide strings

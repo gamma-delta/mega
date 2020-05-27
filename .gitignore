@@ -1,4 +1,6 @@
 /target
+/.vscode
+
 # I have a custom version of this running with the `build.rs` changed so it's not broken on Windows.
 /deepspeech-rs-master
 # No need to include the resources

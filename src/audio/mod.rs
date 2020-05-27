@@ -1,7 +1,6 @@
 //! Handles the audio
 
-mod speech_synthesis;
-pub use speech_synthesis::SpeechSynthesizer;
+pub mod speech_synthesis;
 
 use cpal::{
     self,
@@ -37,6 +36,7 @@ pub fn get_audio_channels() -> (
         .next()
         .expect("speaker supports no outputs?")
         .with_max_sample_rate();
+    let speaker_channels = speaker_format.channels; // pop out here to avoid moving issues
     let speaker_event_loop = audio_host.event_loop();
     // Start the output stream
     let speaker_stream_id = speaker_event_loop
@@ -64,7 +64,12 @@ pub fn get_audio_channels() -> (
             let new_outputs = speaker_receiver.try_iter();
             // Append the newest audio to the back, so it's the last read.
             for snippet in new_outputs {
-                master_buffer.extend(snippet);
+                // Non-mono audio means we may need to duplicate some the values
+                for sample in snippet {
+                    for _channel in 0..speaker_channels {
+                        master_buffer.push_back(sample);
+                    }
+                }
             }
 
             match stream_data {
